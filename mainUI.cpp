@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
@@ -13,6 +14,10 @@
 
 static Portfolio g_portfolio;
 static std::mutex g_mutex;
+static std::vector<std::vector<double>> g_last_corr;
+static std::vector<std::string> g_last_corr_labels;
+static std::string g_last_corr_source;
+static bool g_has_last_corr = false;
 
 // ---------- helpers ----------
 static std::string htmlEscape(const std::string& s) {
@@ -36,16 +41,6 @@ static bool parseDouble(const std::string& s, double& out) {
         size_t idx = 0;
         out = std::stod(s, &idx);
         return idx == s.size();
-    } catch (...) { return false; }
-}
-
-static bool parseSizeT(const std::string& s, std::size_t& out) {
-    try {
-        size_t idx = 0;
-        unsigned long long v = std::stoull(s, &idx);
-        if (idx != s.size()) return false;
-        out = static_cast<std::size_t>(v);
-        return true;
     } catch (...) { return false; }
 }
 
@@ -82,11 +77,11 @@ static std::vector<std::vector<double>> parseMatrixText(const std::string& text)
 
     return M;
 }
-
+static std::string fmt(double x, int precision);
 static std::string portfolioTableHTML(const Portfolio& p) {
     std::ostringstream os;
     os << "<table border='1' cellpadding='6' cellspacing='0'>"
-       << "<tr><th>Asset</th><th>Qty</th><th>Price</th><th>Mu</th><th>Sigma</th><th>Value</th></tr>";
+       << "<tr><th>Asset</th><th>Qty</th><th>Price</th><th>Mu (%)</th><th>Sigma (%)</th><th>Value</th></tr>";
 
     for (const auto& name : p.assetOrder()) {
         const auto& pos = p[name];
@@ -94,12 +89,78 @@ static std::string portfolioTableHTML(const Portfolio& p) {
            << "<td>" << htmlEscape(name) << "</td>"
            << "<td>" << pos.quantity << "</td>"
            << "<td>" << pos.asset.price() << "</td>"
-           << "<td>" << pos.asset.expectedReturn() << "</td>"
-           << "<td>" << pos.asset.volatility() << "</td>"
+           << "<td>" << fmt(pos.asset.expectedReturn() * 100.0, 2) << "%</td>"
+           << "<td>" << fmt(pos.asset.volatility() * 100.0, 2) << "%</td>"
            << "<td>" << pos.value() << "</td>"
            << "</tr>";
     }
     os << "</table>";
+    return os.str();
+}
+static std::string fmt(double x, int precision = 4) {
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(precision) << x;
+    return os.str();
+}
+
+static std::string fmtPercent(double x, int precision = 2) {
+    return fmt(x * 100.0, precision) + "%";
+}
+
+static std::string corrColor(double c) {
+    c = std::max(-1.0, std::min(1.0, c));
+    int r = 255;
+    int g = 255;
+    int b = 255;
+
+    if (c < 0.0) {
+        const double t = 1.0 + c; // [-1,0] -> [0,1]
+        r = 255;
+        g = static_cast<int>(235.0 * t + 20.0 * (1.0 - t));
+        b = static_cast<int>(235.0 * t + 20.0 * (1.0 - t));
+    } else {
+        const double t = c; // [0,1]
+        r = static_cast<int>(235.0 * (1.0 - t) + 20.0 * t);
+        g = static_cast<int>(255.0);
+        b = static_cast<int>(235.0 * (1.0 - t) + 20.0 * t);
+    }
+
+    std::ostringstream os;
+    os << "rgb(" << r << "," << g << "," << b << ")";
+    return os.str();
+}
+
+static std::string correlationMatrixHTML(const std::vector<std::vector<double>>& corr,
+                                         const std::vector<std::string>& labels,
+                                         const std::string& source) {
+    if (corr.empty() || labels.empty()) return "";
+
+    std::ostringstream os;
+    os << "<div class='card'>"
+       << "<h3>Correlation matrix";
+    if (!source.empty()) os << " <span class='muted'>[" << htmlEscape(source) << "]</span>";
+    os << "</h3>"
+       << "<p class='muted'>Code couleur: rouge = corrélation négative, blanc = neutre, vert = corrélation positive.</p>"
+       << "<table class='corr-table'><tr><th></th>";
+
+    for (const auto& label : labels) {
+        os << "<th>" << htmlEscape(label) << "</th>";
+    }
+    os << "</tr>";
+
+    for (std::size_t i = 0; i < corr.size(); ++i) {
+        os << "<tr><th>" << htmlEscape(labels[i]) << "</th>";
+        for (std::size_t j = 0; j < corr[i].size(); ++j) {
+            os << "<td style='background:" << corrColor(corr[i][j]) << "'>"
+               << fmt(corr[i][j], 3) << "</td>";
+        }
+        os << "</tr>";
+    }
+
+    os << "</table>"
+       << "<div class='legend'>"
+       << "<span>-1.0</span><div class='legend-bar'></div><span>+1.0</span>"
+       << "</div></div>";
     return os.str();
 }
 
@@ -136,32 +197,60 @@ static std::string pageHTML(const std::string& message = "") {
 
     std::ostringstream os;
     os << "<!doctype html><html><head><meta charset='utf-8'/>"
-       << "<title>Portfolio Manager</title></head><body>"
-       << "<h2>Portfolio Manager (Local)</h2>";
-
+    << "<meta name='viewport' content='width=device-width, initial-scale=1'/>"
+       << "<title>Portfolio Manager</title>"
+       << "<style>"
+       << "body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:0;background:#f4f7fb;color:#1f2937;}"
+       << ".container{max-width:1100px;margin:32px auto;padding:0 16px;}"
+       << "h1{margin:0 0 18px;font-size:34px;}h3{margin:0 0 12px;}"
+       << ".card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 8px 24px rgba(0,0,0,.05);}"
+       << ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;}"
+       << ".metrics{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0;}"
+       << ".metric{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;min-width:190px;}"
+       << "table{width:100%;border-collapse:collapse;}th,td{padding:10px;border-bottom:1px solid #e5e7eb;text-align:left;}"
+       << "th{background:#f8fafc;font-weight:700;}"
+       << ".corr-table th,.corr-table td{text-align:center;border:1px solid #d1d5db;}"
+       << ".legend{display:flex;align-items:center;gap:8px;margin-top:10px;color:#6b7280;font-size:13px;}"
+       << ".legend-bar{height:10px;flex:1;border-radius:999px;background:linear-gradient(90deg,rgb(255,20,20),rgb(245,245,245),rgb(20,255,20));border:1px solid #d1d5db;}"
+       << "form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}"
+       << "input,textarea{border:1px solid #cbd5e1;border-radius:8px;padding:8px 10px;font:inherit;}"
+       << "input{min-width:130px;}textarea{width:100%;resize:vertical;}"
+       << "button{background:#2563eb;color:white;border:none;border-radius:8px;padding:9px 14px;font-weight:600;cursor:pointer;}"
+       << "button:hover{background:#1d4ed8;}"
+       << ".banner{padding:12px 14px;border-radius:10px;margin-bottom:14px;font-weight:600;}"
+       << ".ok{background:#ecfdf3;border:1px solid #86efac;color:#14532d;}"
+       << ".err{background:#fef2f2;border:1px solid #fca5a5;color:#7f1d1d;}"
+       << ".muted{color:#6b7280;font-size:14px;}"
+       << "</style></head><body><div class='container'>"
+       << "<h1>Portfolio Manager (Local)</h1>";
     if (!message.empty()) {
-        os << "<p style='color:#0a0'><b>" << htmlEscape(message) << "</b></p>";
+        const bool isError = message.rfind("Error:", 0) == 0;
+        os << "<div class='banner " << (isError ? "err" : "ok") << "'>" << htmlEscape(message) << "</div>";
     }
 
-    os << "<h3>Current portfolio</h3>";
+    os << "<div class='card'><h3>Current portfolio</h3>";
     os << portfolioTableHTML(g_portfolio);
-    os << "<p><b>Total value:</b> " << g_portfolio.totalValue() << "</p>";
-    os << "<p><b>Expected return:</b> " << g_portfolio.expectedReturn() << "</p>";
+    os << "<div class='metrics'>"
+       << "<div class='metric'><b>Total value</b><br/>" << fmt(g_portfolio.totalValue(), 2) << "</div>"
+       << "<div class='metric'><b>Expected return</b><br/>" << fmt(g_portfolio.expectedReturn(), 6) << "</div>"
+       << "</div>";
     os << orderHTML(g_portfolio);
     os << weightsHTML(g_portfolio);
+    os << "</div>";
 
-    os << "<hr/>";
+    if (g_has_last_corr) {
+        os << correlationMatrixHTML(g_last_corr, g_last_corr_labels, g_last_corr_source);
+    }
 
-    // Add Yahoo
-    os << "<h3>Add position (Yahoo Finance)</h3>"
+    os << "<div class='grid'>";
+    os << "<div class='card'><h3>Add position (Yahoo Finance)</h3>"
        << "<form action='/add_yahoo' method='get'>"
        << "Ticker: <input name='ticker' placeholder='AAPL'/> "
        << "Qty: <input name='qty' placeholder='10'/> "
        << "<button type='submit'>Add</button>"
-       << "</form>";
+       << "</form></div>";
 
-    // Add manual
-    os << "<h3>Add position (Manual)</h3>"
+    os << "<div class='card'><h3>Add position (Manual)</h3>"
        << "<form action='/add_manual' method='get'>"
        << "Name: <input name='name' placeholder='BOND'/> "
        << "Price: <input name='price' placeholder='100'/> "
@@ -169,26 +258,23 @@ static std::string pageHTML(const std::string& message = "") {
        << "Sigma: <input name='sigma' placeholder='0.05'/> "
        << "Qty: <input name='qty' placeholder='50'/> "
        << "<button type='submit'>Add</button>"
-       << "</form>";
+       << "</form></div>";
 
-    // Remove
-    os << "<h3>Remove position</h3>"
+    os << "<div class='card'><h3>Remove position</h3>"
        << "<form action='/remove' method='get'>"
        << "Name: <input name='name' placeholder='AAPL'/> "
        << "Qty: <input name='qty' placeholder='5'/> "
        << "<button type='submit'>Remove</button>"
-       << "</form>";
-
-    os << "<hr/>";
+       << "</form></div>";
 
     // Metrics auto
-    os << "<h3>Metrics (AUTO correlation from Yahoo)</h3>"
+    os << "<div class='card'><h3>Metrics (AUTO correlation from Yahoo)</h3>"
        << "<form action='/metrics_auto' method='get'>"
        << "<button type='submit'>Compute auto corr + volatility</button>"
-       << "</form>";
+       << "</form></div>";
 
     // Metrics manual corr (to satisfy requirement "corr fourni")
-    os << "<h3>Metrics (MANUAL correlation matrix)</h3>"
+    os << "<div class='card'><h3>Metrics (MANUAL correlation matrix)</h3>"
        << "<form action='/metrics_manual' method='post'>"
        << "<p>Paste matrix (rows separated by newline, values separated by spaces or commas). "
        << "Order = " << htmlEscape([&](){
@@ -197,11 +283,11 @@ static std::string pageHTML(const std::string& message = "") {
             for (std::size_t i=0;i<ord.size();++i) tmp<<ord[i]<<(i+1==ord.size()?"":", ");
             return tmp.str();
           }()) << "</p>"
-       << "<textarea name='matrix' rows='6' cols='60' placeholder='1 0.2\n0.2 1'></textarea><br/>"
+       << "<textarea name='matrix' rows='6' placeholder='1 0.2\n0.2 1'></textarea><br/>"
        << "<button type='submit'>Compute volatility (manual corr)</button>"
-       << "</form>";
+       << "</form></div>";
 
-    os << "</body></html>";
+    os << "</div></div></body></html>";
     return os.str();
 }
 
@@ -320,6 +406,10 @@ int main() {
                 std::lock_guard<std::mutex> lock(g_mutex);
                 er = g_portfolio.expectedReturn();
                 vol = g_portfolio.volatilityApprox(corr);
+                g_last_corr = corr;
+                g_last_corr_labels = tickers;
+                g_last_corr_source = "AUTO / Yahoo";
+                g_has_last_corr = true;
             }
 
             std::ostringstream msg;
@@ -344,8 +434,13 @@ int main() {
             double er=0, vol=0;
             {
                 std::lock_guard<std::mutex> lock(g_mutex);
+                auto ord = g_portfolio.assetOrder();
                 er = g_portfolio.expectedReturn();
                 vol = g_portfolio.volatilityApprox(M); // => invalid_argument si dimension incorrecte (exigence)
+                g_last_corr = M;
+                g_last_corr_labels = ord;
+                g_last_corr_source = "MANUAL";
+                g_has_last_corr = true;
             }
 
             std::ostringstream msg;

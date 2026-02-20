@@ -1,5 +1,5 @@
 #include "Yahoo.hpp"
-
+#ifdef _WIN32
 #include <windows.h>
 #include <winhttp.h>
 
@@ -223,3 +223,20 @@ std::vector<std::vector<double>> correlationMatrixFromYahoo(const std::vector<st
     }
     return corr;
 }
+#else
+
+#include <stdexcept>
+
+Asset fetchAssetFromYahoo(const std::string&) {
+    throw std::runtime_error("Yahoo integration is only available on Windows in this build.");
+}
+
+std::vector<double> fetchDailyLogReturns1y(const std::string&) {
+    throw std::runtime_error("Yahoo integration is only available on Windows in this build.");
+}
+
+std::vector<std::vector<double>> correlationMatrixFromYahoo(const std::vector<std::string>&) {
+    throw std::runtime_error("Yahoo integration is only available on Windows in this build.");
+}
+
+#endif
