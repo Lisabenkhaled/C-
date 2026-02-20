@@ -1,0 +1,18 @@
+# Fichiers compilés
+*.o
+*.out
+*.exe
+*.obj
+
+# Dossiers build
+/build
+/bin
+
+# Fichiers VS Code
+.vscode/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
