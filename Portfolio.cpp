@@ -159,6 +159,36 @@ double Portfolio::volatilityApprox(const std::vector<std::vector<double>>& corr)
     return std::sqrt(std::max(0.0, v));
 }
 
+std::vector<double> Portfolio::varianceContributionsApprox(const std::vector<std::vector<double>>& corr) const {
+    const std::size_t n = positions_.size();
+    std::vector<double> contributions(n, 0.0);
+    if (n == 0) return contributions;
+
+    validateCorrelationMatrix(corr, n);
+
+    const double total = totalValue();
+    if (total <= 0.0) return contributions;
+
+    std::vector<const Position*> pos;
+    pos.reserve(n);
+    for (const auto& [_, p] : positions_) pos.push_back(&p);
+
+    std::vector<double> w(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) w[i] = pos[i]->value() / total;
+
+    for (std::size_t i = 0; i < n; ++i) {
+        const double si = pos[i]->asset.volatility();
+        double covRowDotW = 0.0;
+        for (std::size_t j = 0; j < n; ++j) {
+            const double sj = pos[j]->asset.volatility();
+            covRowDotW += corr[i][j] * si * sj * w[j];
+        }
+        contributions[i] = w[i] * covRowDotW;
+    }
+
+    return contributions;
+}
+
 void Portfolio::display() const {
     std::cout << "Asset order for corr matrix (stable):\n";
     std::size_t k = 0;

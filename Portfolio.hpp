@@ -37,7 +37,8 @@ public:
 
     double varianceApprox(const std::vector<std::vector<double>>& corr) const;
     double volatilityApprox(const std::vector<std::vector<double>>& corr) const;
-
+    std::vector<double> varianceContributionsApprox(const std::vector<std::vector<double>>& corr) const;
+    
     // Utile pour construire la matrice dans le bon ordre
     std::vector<std::string> assetOrder() const;
     void display() const;
