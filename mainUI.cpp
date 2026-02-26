@@ -10,6 +10,8 @@
 #include <mutex>
 #include <stdexcept>
 #include <sstream>
+#include <limits>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -21,6 +23,8 @@ static std::string g_last_corr_source;
 static bool g_has_last_corr = false;
 static bool g_has_last_what_if = false;
 static std::string g_last_what_if_html;
+static bool g_has_last_optimization = false;
+static std::string g_last_optimization_html;
 
 // ---------- helpers ----------
 static std::string htmlEscape(const std::string& s) {
@@ -190,6 +194,110 @@ static Portfolio portfolioFromCSVText(const std::string& csvText) {
     if (rowCount == 0) throw std::invalid_argument("CSV contains no data row.");
     return imported;
 }
+
+
+struct PortfolioPoint {
+    std::vector<double> weights;
+    double expectedReturn = 0.0;
+    double volatility = 0.0;
+    double score = 0.0;
+};
+
+static double expectedReturnFromWeights(const std::vector<double>& w, const std::vector<double>& mu) {
+    double er = 0.0;
+    for (std::size_t i = 0; i < w.size(); ++i) er += w[i] * mu[i];
+    return er;
+}
+
+static double volatilityFromWeights(const std::vector<double>& w,
+                                    const std::vector<double>& sigma,
+                                    const std::vector<std::vector<double>>& corr) {
+    double var = 0.0;
+    for (std::size_t i = 0; i < w.size(); ++i) {
+        for (std::size_t j = 0; j < w.size(); ++j) {
+            var += w[i] * w[j] * sigma[i] * sigma[j] * corr[i][j];
+        }
+    }
+    return std::sqrt(std::max(0.0, var));
+}
+
+static double random01(std::uint64_t& state) {
+    state = state * 6364136223846793005ULL + 1ULL;
+    return static_cast<double>((state >> 11) & ((1ULL << 53) - 1)) / static_cast<double>(1ULL << 53);
+}
+
+static std::vector<double> randomLongOnlyWeights(std::size_t n, std::uint64_t& state) {
+    std::vector<double> w(n, 0.0);
+    double sum = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        w[i] = 1e-6 + random01(state);
+        sum += w[i];
+    }
+    if (sum <= 0.0) return w;
+    for (double& x : w) x /= sum;
+    return w;
+}
+
+static std::string optimizationChartSVG(const std::vector<PortfolioPoint>& candidates,
+                                        const PortfolioPoint& current,
+                                        const PortfolioPoint& best,
+                                        const std::string& objective) {
+    if (candidates.empty()) return "";
+
+    double minVol = std::numeric_limits<double>::max();
+    double maxVol = 0.0;
+    double minRet = std::numeric_limits<double>::max();
+    double maxRet = -std::numeric_limits<double>::max();
+
+    auto absorb = [&](double vol, double er) {
+        minVol = std::min(minVol, vol);
+        maxVol = std::max(maxVol, vol);
+        minRet = std::min(minRet, er);
+        maxRet = std::max(maxRet, er);
+    };
+
+    for (const auto& p : candidates) absorb(p.volatility, p.expectedReturn);
+    absorb(current.volatility, current.expectedReturn);
+    absorb(best.volatility, best.expectedReturn);
+
+    const double w = 760.0;
+    const double h = 320.0;
+    const double pad = 35.0;
+    const double xSpan = std::max(1e-9, maxVol - minVol);
+    const double ySpan = std::max(1e-9, maxRet - minRet);
+
+    auto px = [&](double vol) { return pad + (vol - minVol) / xSpan * (w - 2.0 * pad); };
+    auto py = [&](double er) { return h - pad - (er - minRet) / ySpan * (h - 2.0 * pad); };
+
+    std::ostringstream os;
+    os << "<div><b>Efficient-like cloud (x=risk, y=return)</b><br/>";
+    os << "<svg width='" << w << "' height='" << h << "' viewBox='0 0 " << w << " " << h << "' "
+       << "style='border:1px solid #d1d5db;border-radius:10px;background:#fff'>";
+
+    os << "<line x1='" << pad << "' y1='" << (h-pad) << "' x2='" << (w-pad)
+       << "' y2='" << (h-pad) << "' stroke='#9ca3af'/>";
+    os << "<line x1='" << pad << "' y1='" << pad << "' x2='" << pad
+       << "' y2='" << (h-pad) << "' stroke='#9ca3af'/>";
+
+    for (const auto& p : candidates) {
+        os << "<circle cx='" << px(p.volatility) << "' cy='" << py(p.expectedReturn)
+           << "' r='2.2' fill='#94a3b8' opacity='0.55'/>";
+    }
+
+    os << "<circle cx='" << px(current.volatility) << "' cy='" << py(current.expectedReturn)
+       << "' r='5' fill='#2563eb'/>";
+    os << "<circle cx='" << px(best.volatility) << "' cy='" << py(best.expectedReturn)
+       << "' r='6' fill='#dc2626'/>";
+
+    os << "<text x='" << (px(current.volatility)+8) << "' y='" << (py(current.expectedReturn)-6)
+       << "' font-size='12' fill='#1d4ed8'>Current</text>";
+    os << "<text x='" << (px(best.volatility)+8) << "' y='" << (py(best.expectedReturn)-6)
+       << "' font-size='12' fill='#b91c1c'>Best (" << htmlEscape(objective) << ")</text>";
+
+    os << "</svg></div>";
+    return os.str();
+}
+
 static std::string fmt(double x, int precision);
 static std::string portfolioTableHTML(const Portfolio& p) {
     std::ostringstream os;
@@ -320,6 +428,13 @@ static std::string whatIfResultHTML() {
     return os.str();
 }
 
+static std::string optimizationResultHTML() {
+    if (!g_has_last_optimization) return "";
+    std::ostringstream os;
+    os << "<div class='card'><h3>Optimization result</h3>" << g_last_optimization_html << "</div>";
+    return os.str();
+}
+
 static std::string riskBreakdownHTML(const Portfolio& p,
                                      const std::vector<std::vector<double>>& corr,
                                      bool corrAvailable) {
@@ -355,8 +470,8 @@ static std::string riskBreakdownHTML(const Portfolio& p,
 
 static std::string pageHTML(const std::string& message = "") {
     std::lock_guard<std::mutex> lock(g_mutex);
-
     std::ostringstream os;
+
     os << "<!doctype html><html><head><meta charset='utf-8'/>"
     << "<meta name='viewport' content='width=device-width, initial-scale=1'/>"
        << "<title>Portfolio Manager</title>"
@@ -391,7 +506,7 @@ static std::string pageHTML(const std::string& message = "") {
 
     os << "<div class='card'><h3>Current portfolio</h3>";
     os << portfolioTableHTML(g_portfolio);
-
+    
     const double expectedReturn = g_portfolio.expectedReturn();
     bool hasVolatility = false;
     double volatility = 0.0;
@@ -417,6 +532,7 @@ static std::string pageHTML(const std::string& message = "") {
         os << correlationMatrixHTML(g_last_corr, g_last_corr_labels, g_last_corr_source);
     }
     os << whatIfResultHTML();
+    os << optimizationResultHTML();
 
     os << "<div class='grid'>";
     os << "<div class='card'><h3>Add position (Yahoo Finance)</h3>"
@@ -462,6 +578,8 @@ static std::string pageHTML(const std::string& message = "") {
        << "<textarea name='matrix' rows='6' placeholder='1 0.2\n0.2 1'></textarea><br/>"
        << "<button type='submit'>Compute volatility (manual corr)</button>"
        << "</form></div>";
+    
+    
     os << "<div class='card'><h3>What-if simulation</h3>"
        << "<form action='/what_if' method='get'>"
        << "Name: <input name='name' placeholder='AAPL'/> "
@@ -483,6 +601,23 @@ static std::string pageHTML(const std::string& message = "") {
        << "<form action='/export_csv' method='get'>"
        << "<button type='submit'>Download CSV</button>"
        << "</form></div>";
+
+
+    os << "<div class='card'><h3>Optimize allocation (bonus)</h3>"
+       << "<form action='/optimize' method='get'>"
+       << "Objective: <select name='objective'>"
+       << "<option value='min_variance'>Min variance</option>"
+       << "<option value='max_return'>Max return</option>"
+       << "<option value='max_score'>Max (return - lambda*risk)</option>"
+       << "</select> "
+       << "Target return (optional): <input name='target_return' placeholder='0.07'/> "
+       << "Max volatility (optional): <input name='max_vol' placeholder='0.20'/> "
+       << "Lambda (for max_score): <input name='lambda' placeholder='0.5'/> "
+       << "<button type='submit'>Run optimization</button>"
+       << "</form>"
+       << "<p class='muted'>Uses Monte-Carlo long-only weights; also plots current portfolio and best candidate.</p>"
+       << "</div>";
+
     os << "</div></div></body></html>";
     return os.str();
 }
@@ -516,6 +651,8 @@ int main() {
             {
                 std::lock_guard<std::mutex> lock(g_mutex);
                 g_portfolio.addPosition(a, qty);
+                g_has_last_optimization = false;
+                g_last_optimization_html.clear();
             }
 
             res.set_content(pageHTML("Added " + ticker + " from Yahoo."), "text/html; charset=utf-8");
@@ -549,6 +686,8 @@ int main() {
             {
                 std::lock_guard<std::mutex> lock(g_mutex);
                 g_portfolio.addPosition(a, qty);
+                g_has_last_optimization = false;
+                g_last_optimization_html.clear();
             }
 
             res.set_content(pageHTML("Added " + name + " manually."), "text/html; charset=utf-8");
@@ -574,6 +713,8 @@ int main() {
             {
                 std::lock_guard<std::mutex> lock(g_mutex);
                 g_portfolio.removePosition(name, qty);
+                g_has_last_optimization = false;
+                g_last_optimization_html.clear();
             }
 
             res.set_content(pageHTML("Removed " + std::to_string(qty) + " of " + name + "."), "text/html; charset=utf-8");
@@ -650,6 +791,8 @@ int main() {
                 g_last_corr_source.clear();
                 g_has_last_what_if = false;
                 g_last_what_if_html.clear();
+                g_has_last_optimization = false;
+                g_last_optimization_html.clear();
             }
 
             res.set_content(pageHTML("Portfolio imported from CSV (Excel-compatible)."), "text/html; charset=utf-8");
@@ -669,6 +812,128 @@ int main() {
             }
             res.set_header("Content-Disposition", "attachment; filename=portfolio_export.csv");
             res.set_content(csv, "text/csv; charset=utf-8");
+        } catch (const std::exception& e) {
+            res.set_content(pageHTML(std::string("Error: ") + e.what()), "text/html; charset=utf-8");
+        }
+    });
+
+    // Portfolio optimization (bonus)
+    svr.Get("/optimize", [](const httplib::Request& req, httplib::Response& res) {
+        try {
+            std::string objective = req.has_param("objective") ? req.get_param_value("objective") : "min_variance";
+
+            double targetReturn = -1.0;
+            if (req.has_param("target_return") && !req.get_param_value("target_return").empty()) {
+                if (!parseDouble(req.get_param_value("target_return"), targetReturn)) {
+                    res.set_content(pageHTML("Invalid target_return."), "text/html; charset=utf-8");
+                    return;
+                }
+            }
+
+            double maxVol = -1.0;
+            if (req.has_param("max_vol") && !req.get_param_value("max_vol").empty()) {
+                if (!parseDouble(req.get_param_value("max_vol"), maxVol) || maxVol <= 0.0) {
+                    res.set_content(pageHTML("Invalid max_vol."), "text/html; charset=utf-8");
+                    return;
+                }
+            }
+
+            double lambda = 0.5;
+            if (req.has_param("lambda") && !req.get_param_value("lambda").empty()) {
+                if (!parseDouble(req.get_param_value("lambda"), lambda) || lambda < 0.0) {
+                    res.set_content(pageHTML("Invalid lambda."), "text/html; charset=utf-8");
+                    return;
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(g_mutex);
+                const auto names = g_portfolio.assetOrder();
+                const std::size_t n = names.size();
+                if (n < 2) throw std::invalid_argument("Need at least 2 assets to optimize.");
+                if (!(g_has_last_corr && hasCompatibleMatrixSize(g_last_corr, n))) {
+                    throw std::invalid_argument("Compute correlation matrix first (auto or manual) before optimization.");
+                }
+
+                std::vector<double> mu(n, 0.0), sigma(n, 0.0), currentW(n, 0.0);
+                const double total = g_portfolio.totalValue();
+                for (std::size_t i = 0; i < n; ++i) {
+                    const auto& pos = g_portfolio[names[i]];
+                    mu[i] = pos.asset.expectedReturn();
+                    sigma[i] = pos.asset.volatility();
+                    currentW[i] = total > 0.0 ? pos.value() / total : 0.0;
+                }
+
+                PortfolioPoint current;
+                current.weights = currentW;
+                current.expectedReturn = expectedReturnFromWeights(currentW, mu);
+                current.volatility = volatilityFromWeights(currentW, sigma, g_last_corr);
+                current.score = current.expectedReturn - lambda * current.volatility;
+
+                std::vector<PortfolioPoint> candidates;
+                candidates.reserve(3500);
+                candidates.push_back(current);
+
+                std::uint64_t rng = 0xC0FFEE1234ULL;
+                for (int k = 0; k < 3500; ++k) {
+                    auto w = randomLongOnlyWeights(n, rng);
+                    PortfolioPoint p;
+                    p.weights = w;
+                    p.expectedReturn = expectedReturnFromWeights(w, mu);
+                    p.volatility = volatilityFromWeights(w, sigma, g_last_corr);
+                    p.score = p.expectedReturn - lambda * p.volatility;
+                    candidates.push_back(p);
+                }
+
+                auto isEligible = [&](const PortfolioPoint& p) {
+                    if (targetReturn >= 0.0 && p.expectedReturn < targetReturn) return false;
+                    if (maxVol > 0.0 && p.volatility > maxVol) return false;
+                    return true;
+                };
+
+                PortfolioPoint best;
+                bool bestSet = false;
+
+                for (const auto& p : candidates) {
+                    if (!isEligible(p)) continue;
+                    if (!bestSet) {
+                        best = p;
+                        bestSet = true;
+                        continue;
+                    }
+
+                    if (objective == "max_return") {
+                        if (p.expectedReturn > best.expectedReturn) best = p;
+                    } else if (objective == "max_score") {
+                        if (p.score > best.score) best = p;
+                    } else { // min_variance
+                        if (p.volatility < best.volatility) best = p;
+                    }
+                }
+
+                if (!bestSet) {
+                    throw std::invalid_argument("No candidate portfolio satisfies selected constraints.");
+                }
+
+                std::ostringstream html;
+                html << "<p><b>Objective:</b> " << htmlEscape(objective) << "</p>";
+                html << "<p><b>Current:</b> return=" << fmtPercent(current.expectedReturn, 2)
+                     << " | vol=" << fmtPercent(current.volatility, 2) << "</p>";
+                html << "<p><b>Best candidate:</b> return=" << fmtPercent(best.expectedReturn, 2)
+                     << " | vol=" << fmtPercent(best.volatility, 2)
+                     << " | score=" << fmt(best.score, 4) << "</p>";
+                html << "<p><b>Weights:</b><br/>";
+                for (std::size_t i = 0; i < n; ++i) {
+                    html << htmlEscape(names[i]) << " : " << fmtPercent(best.weights[i], 2) << "<br/>";
+                }
+                html << "</p>";
+                html << optimizationChartSVG(candidates, current, best, objective);
+
+                g_last_optimization_html = html.str();
+                g_has_last_optimization = true;
+            }
+
+            res.set_content(pageHTML("Optimization computed."), "text/html; charset=utf-8");
         } catch (const std::exception& e) {
             res.set_content(pageHTML(std::string("Error: ") + e.what()), "text/html; charset=utf-8");
         }
