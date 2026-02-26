@@ -31,10 +31,11 @@ static void showPortfolio(const Portfolio& p) {
 
     std::cout << "Order for corr matrix (stable): ";
     auto ord = p.assetOrder();
+    auto nameSet = p.assetNameSet();
     for (std::size_t i = 0; i < ord.size(); ++i) {
         std::cout << ord[i] << (i + 1 == ord.size() ? "" : ", ");
     }
-    std::cout << "\n";
+    std::cout << "\nUnique assets (set): " << nameSet.size() << "\n";
 }
 
 static std::vector<std::vector<double>> readCorrMatrix(std::size_t n) {

@@ -3,6 +3,7 @@
 
 #include "Asset.hpp"
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,7 @@ public:
     std::vector<double> varianceContributionsApprox(const std::vector<std::vector<double>>& corr) const;
     
     // Utile pour construire la matrice dans le bon ordre
+    std::set<std::string> assetNameSet() const;
     std::vector<std::string> assetOrder() const;
     void display() const;
 };

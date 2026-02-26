@@ -3,7 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <limits>
-
+#include <set>
 Position::Position(const Asset& a, double q) : asset(a), quantity(q) {
     if (q <= 0.0) throw std::invalid_argument("Position: quantity must be > 0.");
 }
@@ -83,6 +83,12 @@ double Portfolio::expectedReturn() const {
         er += w * pos.asset.expectedReturn();
     }
     return er;
+}
+
+std::set<std::string> Portfolio::assetNameSet() const {
+    std::set<std::string> names;
+    for (const auto& [name, _] : positions_) names.insert(name);
+    return names;
 }
 
 std::vector<std::string> Portfolio::assetOrder() const {
