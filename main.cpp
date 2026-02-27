@@ -138,7 +138,7 @@ int main() {
                 p2.addPosition(Asset("DEMO_A", 100.0, 0.05, 0.10), 1);
                 p2.addPosition(Asset("DEMO_B", 200.0, 0.07, 0.15), 2);
 
-                Portfolio merged = p + p2; // operator+ obligatoire
+                Portfolio merged = p + p2; // operator+ 
                 std::cout << "Merged portfolio:\n";
                 showPortfolio(merged);
             }
@@ -149,7 +149,7 @@ int main() {
                     continue;
                 }
 
-                // Ordre stable du portfolio premium (tri lexical via map)
+                // Ordre stable du portfolio (tri lexical via map)
                 auto tickers = p.assetOrder();
 
                 std::cout << "Fetching returns and building correlation matrix from Yahoo...\n";

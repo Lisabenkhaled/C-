@@ -21,7 +21,7 @@ void Portfolio::addPosition(const Asset& a, double quantity) {
         return;
     }
 
-    // Premium: vérification de cohérence des paramètres d’actif
+    // vérification de cohérence des paramètres d’actif
     const Asset& existing = it->second.asset;
     const double eps = 1e-12;
     if (std::fabs(existing.expectedReturn() - a.expectedReturn()) > eps ||
@@ -196,7 +196,7 @@ std::vector<double> Portfolio::varianceContributionsApprox(const std::vector<std
 }
 
 void Portfolio::display() const {
-    std::cout << "Asset order for corr matrix (stable):\n";
+    std::cout << "Asset order for corr matrix:\n";
     std::size_t k = 0;
     for (const auto& [name, pos] : positions_) {
         std::cout << "  [" << k++ << "] " << name

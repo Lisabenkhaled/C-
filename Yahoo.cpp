@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-// #pragma comment(lib, "winhttp.lib") // inutile avec g++ + -lwinhttp
+// #pragma comment(lib, "winhttp.lib") 
 
 static std::wstring toWide(const std::string& s) {
     if (s.empty()) return L"";

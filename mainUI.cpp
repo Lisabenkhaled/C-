@@ -26,7 +26,7 @@ static std::string g_last_what_if_html;
 static bool g_has_last_optimization = false;
 static std::string g_last_optimization_html;
 
-// ---------- helpers ----------
+// helpers 
 static std::string htmlEscape(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -603,7 +603,7 @@ static std::string pageHTML(const std::string& message = "") {
        << "</form></div>";
 
 
-    os << "<div class='card'><h3>Optimize allocation (bonus)</h3>"
+    os << "<div class='card'><h3>Optimize allocation </h3>"
        << "<form action='/optimize' method='get'>"
        << "Objective: <select name='objective'>"
        << "<option value='min_variance'>Min variance</option>"
@@ -622,7 +622,7 @@ static std::string pageHTML(const std::string& message = "") {
     return os.str();
 }
 
-// ---------- main ----------
+// main
 int main() {
     httplib::Server svr;
 
@@ -817,7 +817,7 @@ int main() {
         }
     });
 
-    // Portfolio optimization (bonus)
+    // Portfolio optimization
     svr.Get("/optimize", [](const httplib::Request& req, httplib::Response& res) {
         try {
             std::string objective = req.has_param("objective") ? req.get_param_value("objective") : "min_variance";

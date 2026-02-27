@@ -17,7 +17,7 @@ struct Position {
 
 class Portfolio {
 private:
-    // Premium: ordre stable (tri lexical) => corr matrix reproductible
+    // ordre stable (tri lexical) => corr matrix reproductible
     std::map<std::string, Position> positions_;
 
     static void validateCorrelationMatrix(const std::vector<std::vector<double>>& corr, std::size_t n);
@@ -40,7 +40,7 @@ public:
     double volatilityApprox(const std::vector<std::vector<double>>& corr) const;
     std::vector<double> varianceContributionsApprox(const std::vector<std::vector<double>>& corr) const;
     
-    // Utile pour construire la matrice dans le bon ordre
+    // pour construire la matrice dans le bon ordre
     std::set<std::string> assetNameSet() const;
     std::vector<std::string> assetOrder() const;
     void display() const;
